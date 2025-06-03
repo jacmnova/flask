@@ -1,83 +1,67 @@
-from flask import Flask
-import tabula
-# Importar las librerías necesarias
-from functools import wraps
-from flask import Flask, request, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
-import jwt
-from flask_restx import Api, Resource, fields
-from flask_sqlalchemy import SQLAlchemy
-from flask_marshmallow import Marshmallow
-from flask_cors import CORS
-from sqlalchemy.orm import Mapped
-from sqlalchemy import Column, Integer, String, Float, BigInteger, Boolean, JSON, func
-import json
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import secrets
-import string
-from werkzeug.datastructures import FileStorage
-import pandas as pd
-from sqlalchemy import create_engine, text
-import boto3
-import datetime
-import pytz
-import calendar
-import time
-import numpy as np
-import uuid
+
 import os
-import pandas as pd
-from sqlalchemy import exists
-from werkzeug.utils import secure_filename
-from PyPDF2 import PdfReader
+from flask import Flask, request, jsonify
+import requests
 
-# Configurar el cliente de S3 para utilizar el esquema de autenticación AWS4-HMAC-SHA256
-
-
-# Crear la aplicación Flask
 app = Flask(__name__)
-CORS(app)
 
+# WARNING: Hardcoded credentials. Use environment variables in production.
+PROTEO_USER = 'RICAV'
+PROTEO_PASSWORD = '3691474'
+PROTEO_BASE_URL = 'http://insuaminca.proteoerp.org:50080/proteoerp/api'
 
-@app.route('/api/convert_pdf', methods=['POST'])
-def convert_pdf():
-    # pdf_file = "BRASÍLIA - CONSULTAS.pdf"
-    file = request.files['file']
-    pdf_file = secure_filename(file.filename)
-    file.save(pdf_file)
-    num_pag = get_pdf_page_count(pdf_file)
-    print(num_pag)
-    json_result = convert_pdf_to_json(pdf_file, num_pag)
+@app.route('/proteo/login', methods=['POST'])
+def proteo_login():
+    try:
+        response = requests.post(
+            f'{PROTEO_BASE_URL}/login/login',
+            json={'user': PROTEO_USER, 'password': PROTEO_PASSWORD},
+            headers={'Content-Type': 'application/json'}
+        )
+        response.raise_for_status()  # Raises an HTTPError for bad responses (4XX or 5XX)
+        return jsonify(response.json()), response.status_code
+    except requests.exceptions.HTTPError as http_err:
+        print(f"HTTP error occurred during Proteo login: {http_err} - {response.text}")
+        return jsonify({'message': f'Error logging into ProteoERP: {response.status_code} - {response.text}'}), response.status_code
+    except requests.exceptions.RequestException as req_err:
+        print(f"Request exception occurred during Proteo login: {req_err}")
+        return jsonify({'message': 'Failed to connect to ProteoERP login service', 'error': str(req_err)}), 500
+    except Exception as e:
+        print(f"An unexpected error occurred during Proteo login: {e}")
+        return jsonify({'message': 'An unexpected error occurred', 'error': str(e)}), 500
 
-    # Reemplazar NaN por null en el resultado JSON
-    json_str = json.dumps(json_result)
-    json_str = json_str.replace('NaN', 'null')
-    json_result = json.loads(json_str)
+@app.route('/proteo/clients', methods=['POST'])
+def proteo_get_clients():
+    try:
+        data = request.get_json()
+        api_key = data.get('apiKey')
 
-    df = pd.DataFrame(json_result[0])
+        if not api_key:
+            return jsonify({'message': 'API key is required'}), 400
 
-    # Imprimir las columnas del DataFrame
-    columnas = df.columns.tolist()
-
-    return jsonify({'table': json_result[0], 'header': columnas}), 200
-
-
-def convert_pdf_to_json(pdf_file, num_page):
-    dfs = tabula.read_pdf(pdf_file, pages='all')
-    print(dfs)
-    json_data = []
-    for df in dfs:
-        json_data.append(df.to_dict(orient='records'))
-    return json_data
-
-def get_pdf_page_count(pdf_file):
-    reader = PdfReader(pdf_file)
-    num_pages = len(reader.pages)
-    return num_pages
-
-
+        proteo_response = requests.post(
+            f'{PROTEO_BASE_URL}/scli/get',
+            headers={
+                'Content-Type': 'application/json',
+                'AUTHORIZATION': api_key,
+            },
+            json={
+                'filters': {'tipo': '1'},
+                'fields': 'cliente,nombre,rifci',
+            }
+        )
+        proteo_response.raise_for_status()
+        return jsonify(proteo_response.json()), proteo_response.status_code
+    except requests.exceptions.HTTPError as http_err:
+        print(f"HTTP error occurred fetching Proteo clients: {http_err} - {proteo_response.text}")
+        return jsonify({'message': f'Error fetching clients from ProteoERP: {proteo_response.status_code} - {proteo_response.text}'}), proteo_response.status_code
+    except requests.exceptions.RequestException as req_err:
+        print(f"Request exception occurred fetching Proteo clients: {req_err}")
+        return jsonify({'message': 'Failed to connect to ProteoERP client service', 'error': str(req_err)}), 500
+    except Exception as e:
+        print(f"An unexpected error occurred fetching Proteo clients: {e}")
+        return jsonify({'message': 'An unexpected error occurred', 'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, port=os.getenv("PORT", default=4000))
+    port = int(os.getenv("PORT", default=4000))
+    app.run(debug=True, host='0.0.0.0', port=port)
